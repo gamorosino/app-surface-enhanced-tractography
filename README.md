@@ -5,9 +5,7 @@ orientation distribution function (FODF), and runs surface-guided
 probabilistic tractography seeded from FreeSurfer white matter surfaces,
 producing one whole-brain tractogram.
 
-This is a brainlife.io port of
-[gamorosino/ensemble_tracking](https://github.com/gamorosino/ensemble_tracking)'s
-`run_tracking.sh`, which itself drives the original SET method's reference
+This is a brainlife.io app adaptation of the original SET method's reference
 implementation ([StongeEtienne/set-nf](https://github.com/StongeEtienne/set-nf)).
 
 ## Citation
