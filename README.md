@@ -8,7 +8,14 @@ matter surfaces, producing one whole-brain tractogram.
 This is a brainlife.io port of
 [gamorosino/ensemble_tracking](https://github.com/gamorosino/ensemble_tracking)'s
 `run_tracking.sh`.
+## Authors
 
+- Gabriele Amorosino
+
+## Contributors
+
+- Sydney Fulton
+  
 ## Scope
 
 - **Only the `freesurfer_a2009s_proper` profile is supported.** The original
@@ -72,9 +79,6 @@ paths, then run `./main` from this directory. Needs Singularity, not Docker,
 installed locally (`main` calls `singularity exec docker://...` — Singularity
 pulls and caches the image itself).
 
-## Authors
-
-- Gabriele Amorosino
 
 ## License
 
