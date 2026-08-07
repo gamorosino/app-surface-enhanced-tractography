@@ -1,0 +1,121 @@
+{
+  "name": "set-surface-enhanced-tractography",
+  "github": "gamorosino/app-surface-enhanced-tractography",
+  "github_branch": "main",
+  "desc": "Surface-Enhanced Tractography (SET): ANTs T1-to-DWI registration, FODF computation, and surface-guided probabilistic tractography seeded from FreeSurfer white matter surfaces. freesurfer_a2009s_proper profile only.",
+  "config": {
+    "dwi": { "type": "input", "file_id": "dwi", "input_id": "dwi" },
+    "bvecs": { "type": "input", "file_id": "bvecs", "input_id": "dwi" },
+    "bvals": { "type": "input", "file_id": "bvals", "input_id": "dwi" },
+    "freesurfer": { "type": "input", "file_id": "output", "input_id": "freesurfer" },
+    "fa": { "type": "input", "file_id": "fa", "input_id": "tensor" },
+    "t1": { "type": "input", "file_id": "t1", "input_id": "t1" },
+    "mask_5tt": { "type": "input", "file_id": "mask", "input_id": "mask_5tt" },
+    "fodf_lmax8": { "type": "input", "file_id": "lmax8", "input_id": "fodf" },
+    "fodf_response": { "type": "input", "file_id": "response", "input_id": "fodf" },
+    "t1_warp": { "type": "input", "file_id": "warp", "input_id": "t1_transform" },
+    "t1_inv_warp": { "type": "input", "file_id": "inverse-warp", "input_id": "t1_transform" },
+    "t1_affine": { "type": "input", "file_id": "affine", "input_id": "t1_transform" },
+    "random_seeds": {
+      "id": "random_seeds", "type": "string", "placeholder": "1,2,3,4,5,6,7,8",
+      "advanced": true, "desc": "Comma-separated random seeds for SET tracking chains.",
+      "default": "1,2,3,4,5,6,7,8"
+    },
+    "nb_iter": {
+      "id": "nb_iter", "type": "number", "placeholder": 1,
+      "advanced": true, "desc": "Dynamic seeding iterations per random seed.",
+      "default": 1
+    },
+    "nb_seeds": {
+      "id": "nb_seeds", "type": "number", "placeholder": 500000,
+      "advanced": true, "desc": "Seeds per iteration.",
+      "default": 500000
+    },
+    "max_parallel_seeds": {
+      "id": "max_parallel_seeds", "type": "number", "placeholder": 4,
+      "advanced": true, "desc": "Concurrent random-seed tracking chains.",
+      "default": 4
+    }
+  },
+  "inputs": [
+    {
+      "id": "dwi",
+      "datatype": "neuro/dwi",
+      "datatype_tags": [],
+      "optional": false,
+      "multi": false,
+      "advanced": false
+    },
+    {
+      "id": "freesurfer",
+      "datatype": "neuro/freesurfer",
+      "datatype_tags": [],
+      "optional": false,
+      "multi": false,
+      "advanced": false
+    },
+    {
+      "id": "tensor",
+      "datatype": "neuro/tensor",
+      "datatype_tags": [],
+      "optional": false,
+      "multi": false,
+      "advanced": false
+    },
+    {
+      "id": "t1",
+      "datatype": "neuro/anat/t1w",
+      "datatype_tags": [],
+      "optional": false,
+      "multi": false,
+      "advanced": false
+    },
+    {
+      "id": "mask_5tt",
+      "datatype": "neuro/mask",
+      "datatype_tags": ["5tt"],
+      "optional": false,
+      "multi": false,
+      "advanced": false
+    },
+    {
+      "id": "fodf",
+      "datatype": "neuro/csd",
+      "datatype_tags": [],
+      "optional": true,
+      "multi": false,
+      "advanced": true
+    },
+    {
+      "id": "t1_transform",
+      "datatype": "neuro/transform/nifti",
+      "datatype_tags": [],
+      "optional": true,
+      "multi": false,
+      "advanced": true
+    }
+  ],
+  "outputs": [
+    {
+      "id": "tractogram",
+      "desc": "Final concatenated whole-brain tractogram from Surface-Enhanced Tractography (all 8 random-seed chains, flipped and merged).",
+      "datatype": "neuro/track/tck",
+      "datatype_tags": [],
+      "archive": true
+    },
+    {
+      "id": "fodf",
+      "desc": "FODF (SH order 8, descoteaux07 basis) -- only produced when the fodf input wasn't already given.",
+      "datatype": "neuro/csd",
+      "datatype_tags": [],
+      "archive": true
+    },
+    {
+      "id": "t1_transform",
+      "desc": "T1-to-DWI ANTs registration transform -- only produced when the t1_transform input wasn't already given.",
+      "datatype": "neuro/transform/nifti",
+      "datatype_tags": [],
+      "archive": true
+    }
+  ]
+}
