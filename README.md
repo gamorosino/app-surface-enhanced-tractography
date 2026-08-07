@@ -1,13 +1,23 @@
-# app-ensemble-tracking
+# SET — Surface-Enhanced Tractography
 
-Surface-Enhanced Tractography (SET): registers a subject's T1w to DWI space,
-computes (or reuses) a fiber orientation distribution function (FODF), and
-runs surface-guided probabilistic tractography seeded from FreeSurfer white
-matter surfaces, producing one whole-brain tractogram.
+Registers a subject's T1w to DWI space, computes (or reuses) a fiber
+orientation distribution function (FODF), and runs surface-guided
+probabilistic tractography seeded from FreeSurfer white matter surfaces,
+producing one whole-brain tractogram.
 
 This is a brainlife.io port of
 [gamorosino/ensemble_tracking](https://github.com/gamorosino/ensemble_tracking)'s
-`run_tracking.sh`.
+`run_tracking.sh`, which itself drives the original SET method's reference
+implementation ([StongeEtienne/set-nf](https://github.com/StongeEtienne/set-nf)).
+
+## Citation
+
+If you use this app, please cite the original SET method:
+
+> St-Onge, Etienne, et al. "Surface-enhanced tractography (SET)." *NeuroImage* 169 (2018): 524-539.
+
+Original SET implementation: https://github.com/StongeEtienne/set-nf
+
 ## Authors
 
 - Gabriele Amorosino
