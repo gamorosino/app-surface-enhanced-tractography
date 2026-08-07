@@ -1,0 +1,389 @@
+#!/bin/bash
+
+#SBATCH --job-name=ensemble-tracking
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=16G
+#SBATCH --time=04:00:00
+
+# Surface-Enhanced Tractography (SET) -- brainlife.io port of
+# github.com/gamorosino/ensemble_tracking's run_tracking.sh.
+#
+# Scope: this app always uses the direct/Docker execution path
+# (04_run_set_direct.sh) rather than the Nextflow pipeline the original repo
+# also supports. Direct mode only replicates the "freesurfer_a2009s_proper"
+# profile, so that is the only profile this app supports -- the other 7
+# Nextflow profiles (freesurfer_basic/proper, freesurfer_a2009s_basic,
+# civet2_dkt/aal, vtk) are not available here.
+#
+# Three containers are chained via sequential `singularity exec` calls (no
+# nested containers, no Dockerfile in this repo -- brainlife apps never build
+# one; see docker/ensemble_tracking/ in the source repo for how the first
+# image below was built):
+#   - docker://gamorosino/ensemble_tracking:latest -- ANTs/python/mrtrix3
+#     staging, T1 registration, tractogram post-processing.
+#   - docker://scilus/scilus:1.6.0                 -- FODF computation and
+#     every scilpy surface/tractography call inside 04_run_set_direct.sh.
+#   - docker://gamorosino/set_1v1:latest           -- the SET tracking engine
+#     itself (already published, unchanged from the original repo).
+#
+# 5TT tissue ordering: vol2=WM/include, vol3=CSF/exclude, matching the
+# official brainlife `neuro/mask` 5tt tag ordering (0=cortical-GM,
+# 1=subcortical-GM, 2=WM/brainstem, 3=CSF/ventricles). The original repo's
+# run_tracking.sh assumed vol0=CSF/vol3=WM instead -- confirmed wrong against
+# two independent real 5tt datasets (voxelwise dice >0.8 between vol2 and a
+# separately-provided wm.nii.gz, and between vol3 and csf.nii.gz, both on a
+# locally-run subject and a dataset downloaded directly from brainlife.io).
+# This app uses the corrected indices, not the original script's.
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STEPS_DIR="${REPO_DIR}/code/scripts/steps"
+source "${REPO_DIR}/code/scripts/utils/qc_json.sh"
+
+TASK_DIR="$(pwd)"
+# ET_IMAGE_OVERRIDE lets local testing point at an already-built local image
+# (e.g. docker-daemon://gamorosino/ensemble_tracking:latest) before it's been
+# pushed to a registry -- brainlife.io itself never sets this, so real runs
+# always pull the public image below.
+ET_IMAGE="${ET_IMAGE_OVERRIDE:-docker://gamorosino/ensemble_tracking:latest}"
+SCILUS_IMAGE="docker://scilus/scilus:1.6.0"
+
+# ---------------------------------------------------------------------------
+# Read config.json (CONFIG env var lets main_cli.sh point at a different path)
+# ---------------------------------------------------------------------------
+CONFIG="${CONFIG:-config.json}"
+[[ -f "$CONFIG" ]] || { echo "ERROR: config not found: $CONFIG"; exit 1; }
+
+dwi=$(jq -r '.dwi' "$CONFIG")
+bvecs=$(jq -r '.bvecs' "$CONFIG")
+bvals=$(jq -r '.bvals' "$CONFIG")
+freesurfer_dir=$(jq -r '.freesurfer' "$CONFIG")
+fa_in=$(jq -r '.fa' "$CONFIG")
+t1=$(jq -r '.t1' "$CONFIG")
+mask_5tt=$(jq -r '.mask_5tt' "$CONFIG")
+fodf_lmax8=$(jq -r '.fodf_lmax8 // empty' "$CONFIG")
+fodf_response=$(jq -r '.fodf_response // empty' "$CONFIG")
+t1_warp=$(jq -r '.t1_warp // empty' "$CONFIG")
+t1_inv_warp=$(jq -r '.t1_inv_warp // empty' "$CONFIG")
+t1_affine=$(jq -r '.t1_affine // empty' "$CONFIG")
+random_seeds=$(jq -r '.random_seeds // "1,2,3,4,5,6,7,8"' "$CONFIG")
+nb_iter=$(jq -r '.nb_iter // 1' "$CONFIG")
+nb_seeds=$(jq -r '.nb_seeds // 500000' "$CONFIG")
+max_parallel_seeds=$(jq -r '.max_parallel_seeds // 4' "$CONFIG")
+
+[[ -f "$dwi" ]] || { echo "ERROR: dwi not found: $dwi"; exit 1; }
+[[ -d "$freesurfer_dir" ]] || { echo "ERROR: freesurfer dir not found: $freesurfer_dir"; exit 1; }
+[[ -f "$fa_in" ]] || { echo "ERROR: fa not found: $fa_in"; exit 1; }
+[[ -f "$t1" ]] || { echo "ERROR: t1 not found: $t1"; exit 1; }
+[[ -f "$mask_5tt" ]] || { echo "ERROR: mask_5tt not found: $mask_5tt"; exit 1; }
+
+n_reg=0
+[[ -n "$t1_warp"     ]] && (( n_reg++ )) || true
+[[ -n "$t1_inv_warp" ]] && (( n_reg++ )) || true
+[[ -n "$t1_affine"   ]] && (( n_reg++ )) || true
+if [[ "$n_reg" -gt 0 && "$n_reg" -lt 3 ]]; then
+    echo "ERROR: t1_warp, t1_inv_warp, and t1_affine must all be given together"; exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Container helpers
+#
+# Singularity only shares a limited default set of host paths (e.g. $HOME)
+# with the container -- anything on a separately-mounted filesystem (sshfs,
+# a second disk, etc.) is otherwise invisible inside it. EXTRA_BINDS collects
+# --bind flags for the mount point of every path we actually reference, so
+# the container can see them regardless of where they live on the host.
+#
+# Singularity itself is invoked from a safe, local cwd (cd / in a subshell)
+# rather than TASK_DIR: its own startup fails with "Failed to open current
+# working directory: Permission denied" whenever the *invoking shell's* cwd
+# is on a FUSE mount (e.g. sshfs) -- no singularity flag prevents this, since
+# it happens before the container even starts. --pwd tells it where the real
+# working directory should be instead.
+# ---------------------------------------------------------------------------
+EXTRA_BINDS=()
+declare -A _BIND_SEEN=()
+add_bind_for() {
+    local target="$1"
+    [[ -n "${target}" ]] || return 0
+    local resolved mount_point
+    resolved="$(readlink -f "${target}" 2>/dev/null || echo "${target}")"
+    mount_point="$(df --output=target -- "${resolved}" 2>/dev/null | tail -n1 | xargs || true)"
+    [[ -n "${mount_point}" && "${mount_point}" != "/" ]] || return 0
+    if [[ -z "${_BIND_SEEN[${mount_point}]:-}" ]]; then
+        _BIND_SEEN["${mount_point}"]=1
+        EXTRA_BINDS+=(--bind "${mount_point}:${mount_point}")
+    fi
+}
+for _p in "$TASK_DIR" "$dwi" "$bvecs" "$bvals" "$freesurfer_dir" "$fa_in" "$t1" "$mask_5tt" \
+          "$fodf_lmax8" "$fodf_response" "$t1_warp" "$t1_inv_warp" "$t1_affine"; do
+    add_bind_for "$_p"
+done
+
+et_exec() {
+    local host_pwd; host_pwd="$(pwd)"
+    ( cd / && singularity exec --cleanenv --pwd "${host_pwd}" "${EXTRA_BINDS[@]}" "$ET_IMAGE" "$@" )
+}
+scilus_exec() {
+    local host_pwd; host_pwd="$(pwd)"
+    ( cd / && singularity exec --cleanenv --pwd "${host_pwd}" "${EXTRA_BINDS[@]}" "$SCILUS_IMAGE" "$@" )
+}
+
+imm_squeeze() {
+    et_exec python3 - "$1" "$2" <<'PYEOF'
+import nibabel as nib, numpy as np, sys
+img = nib.load(sys.argv[1])
+nib.save(nib.Nifti1Image(np.squeeze(img.get_fdata()), img.affine, img.header), sys.argv[2])
+PYEOF
+}
+
+binarize_nii() {
+    local in="$1" out="$2" thr="${3:-0}"
+    et_exec python3 - "$in" "$out" "$thr" <<'PYEOF'
+import sys, numpy as np, nibabel as nib
+img = nib.load(sys.argv[1])
+d = np.nan_to_num(img.get_fdata())
+mask = (d > float(sys.argv[3])).any(axis=-1).astype(np.uint8) if d.ndim == 4 \
+       else (d > float(sys.argv[3])).astype(np.uint8)
+out = nib.Nifti1Image(mask, img.affine, img.header); out.set_data_dtype(np.uint8)
+nib.save(out, sys.argv[2])
+PYEOF
+}
+
+extract_5tt_vol() {
+    local mask="$1" vol="$2" out="$3"
+    et_exec python3 - "$mask" "$vol" "$out" <<'PYEOF'
+import sys, numpy as np, nibabel as nib
+img = nib.load(sys.argv[1]); v = int(sys.argv[2])
+d = np.squeeze(img.get_fdata()[..., v]).astype(np.float32)
+nib.save(nib.Nifti1Image(d, img.affine, img.header), sys.argv[3])
+PYEOF
+}
+
+make_mean_b0() {
+    local dwi="$1" bvals="$2" out="$3"
+    et_exec python3 - "$dwi" "$bvals" "$out" <<'PYEOF'
+import sys, numpy as np, nibabel as nib
+img = nib.load(sys.argv[1])
+bv  = np.loadtxt(sys.argv[2]).ravel()
+idx = np.where(bv <= 5)[0]
+d   = img.get_fdata()
+mean = d[..., idx].mean(axis=-1).astype(np.float32)
+nib.save(nib.Nifti1Image(mean, img.affine, img.header), sys.argv[3])
+PYEOF
+}
+
+# ---------------------------------------------------------------------------
+# Set up working directories
+# ---------------------------------------------------------------------------
+sub="sub-01"
+output_dir="${TASK_DIR}/out_dir"
+staging_dir="${output_dir}/.set_inputs"
+stage="${staging_dir}/${sub}"
+mkdir -p "$output_dir" "$staging_dir" \
+         "${stage}/Register_T1" "${stage}/DTI_Metrics" "${stage}/FODF_Metrics" \
+         "${stage}/PFT_Maps" "${stage}/freesurfer/${sub}"
+
+# Stage dwi/bvecs/bvals together with fixed filenames -- 03_compute_fodf.sh
+# expects dwi.nii.gz/.bvals/.bvecs sitting in the same directory.
+dwi_dir="${TASK_DIR}/work_dwi"
+mkdir -p "$dwi_dir"
+cp "$dwi"   "${dwi_dir}/dwi.nii.gz"
+cp "$bvecs" "${dwi_dir}/dwi.bvecs"
+cp "$bvals" "${dwi_dir}/dwi.bvals"
+
+qc_json="${output_dir}/${sub}_qc.json"
+qc_init "$qc_json"
+trap 'qc_finalize "$qc_json"' EXIT
+
+echo "=== Staging SET inputs ==="
+
+# ---------------------------------------------------------------------------
+# 1. PFT maps (from 5TT: vol2=WM/include, vol3=CSF/exclude -- see the scope
+#    note at the top of this file about this ordering fix)
+# ---------------------------------------------------------------------------
+inc="${stage}/PFT_Maps/${sub}__map_include.nii.gz"
+exc="${stage}/PFT_Maps/${sub}__map_exclude.nii.gz"
+echo "--- Extracting PFT maps from 5TT mask ---"
+extract_5tt_vol "$mask_5tt" 2 "$inc"
+extract_5tt_vol "$mask_5tt" 3 "$exc"
+imm_squeeze "$inc" "$inc"
+imm_squeeze "$exc" "$exc"
+qc_pft_timestamp=$(qc_timestamp)
+
+# ---------------------------------------------------------------------------
+# 2. DTI metrics
+# ---------------------------------------------------------------------------
+fa_staged="${stage}/DTI_Metrics/${sub}__fa.nii.gz"
+echo "--- Copying FA map ---"
+cp "$fa_in" "$fa_staged"
+qc_fa_timestamp=$(qc_timestamp)
+
+# ---------------------------------------------------------------------------
+# 3. FODF (skip computation if a precomputed neuro/csd input was given)
+# ---------------------------------------------------------------------------
+staged_fodf="${stage}/FODF_Metrics/fodf.nii.gz"
+if [[ -n "$fodf_lmax8" ]]; then
+    echo "--- Using precomputed FODF (neuro/csd, lmax8, descoteaux07 basis) ---"
+    cp "$fodf_lmax8" "$staged_fodf"
+    qc_fodf_status="precomputed"
+else
+    echo "--- Computing FODF ---"
+    bash "${STEPS_DIR}/03_compute_fodf.sh" --workdir "$dwi_dir"
+    cp "${dwi_dir}/fodf.nii.gz" "$staged_fodf"
+    qc_fodf_status="computed"
+fi
+qc_fodf_timestamp=$(qc_timestamp)
+
+# ---------------------------------------------------------------------------
+# 4. T1 registration (skip if all three precomputed transforms were given)
+# ---------------------------------------------------------------------------
+reg_prefix="${stage}/Register_T1/${sub}"
+if [[ "$n_reg" -eq 3 ]]; then
+    echo "--- Using precomputed T1 registration (neuro/transform/nifti) ---"
+    qc_reg_status="precomputed"
+    cp "$t1_warp"     "${reg_prefix}__output1Warp.nii.gz"
+    cp "$t1_inv_warp" "${reg_prefix}__output1InverseWarp.nii.gz"
+    # neuro/transform/nifti's affine file is affine.txt (ANTs itself produces
+    # a binary .mat) -- convert back with the same ANTs tool used to produce
+    # affine.txt in the first place.
+    et_exec ConvertTransformFile 3 "$t1_affine" "${reg_prefix}__output0GenericAffine.mat"
+
+    et_exec antsApplyTransforms -d 3 -i "$t1" \
+        -r "${stage}/DTI_Metrics/${sub}__fa.nii.gz" \
+        -o "${reg_prefix}__t1_warped.nii.gz" \
+        -t "${reg_prefix}__output1Warp.nii.gz" \
+           "${reg_prefix}__output0GenericAffine.mat"
+
+    t1_mask_tmp="${stage}/Register_T1/t1_mask_tmp.nii.gz"
+    binarize_nii "$t1" "$t1_mask_tmp"
+    et_exec antsApplyTransforms -d 3 -i "$t1_mask_tmp" \
+        -r "${reg_prefix}__t1_warped.nii.gz" \
+        -o "${reg_prefix}__t1_mask_warped.nii.gz" \
+        -n NearestNeighbor \
+        -t "${reg_prefix}__output1Warp.nii.gz" \
+           "${reg_prefix}__output0GenericAffine.mat"
+    scilus_exec scil_image_math.py convert \
+        "${reg_prefix}__t1_mask_warped.nii.gz" \
+        "${reg_prefix}__t1_mask_warped.nii.gz" --data_type uint8 -f
+    rm -f "$t1_mask_tmp"
+else
+    echo "--- Registering T1 to DWI space (ANTs) ---"
+    qc_reg_status="computed"
+    cpus="${SLURM_CPUS_PER_TASK:-4}"
+    b0="${dwi_dir}/b0.nii.gz"
+    echo "  Generating mean b0..."
+    make_mean_b0 "${dwi_dir}/dwi.nii.gz" "${dwi_dir}/dwi.bvals" "$b0"
+
+    t1_mask_tmp="${stage}/Register_T1/t1_mask_tmp.nii.gz"
+    binarize_nii "$mask_5tt" "$t1_mask_tmp"
+
+    export SINGULARITYENV_ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS="$cpus"
+    export SINGULARITYENV_OMP_NUM_THREADS=1 SINGULARITYENV_OPENBLAS_NUM_THREADS=1
+    export SINGULARITYENV_ANTS_RANDOM_SEED=1234
+
+    (
+        cd "${stage}/Register_T1"
+        et_exec antsRegistration --dimensionality 3 --float 0 \
+            --output [output,outputWarped.nii.gz,outputInverseWarped.nii.gz] \
+            --interpolation Linear --use-histogram-matching 0 \
+            --winsorize-image-intensities [0.005,0.995] \
+            --initial-moving-transform ["$b0","$t1",1] \
+            --transform Rigid['0.2'] \
+                --metric MI["$b0","$t1",1,32,Regular,0.25] \
+                --convergence [500x250x125x50,1e-6,10] --shrink-factors 8x4x2x1 \
+                --smoothing-sigmas 3x2x1x0 \
+            --transform Affine['0.2'] \
+                --metric MI["$b0","$t1",1,32,Regular,0.25] \
+                --convergence [500x250x125x50,1e-6,10] --shrink-factors 8x4x2x1 \
+                --smoothing-sigmas 3x2x1x0 \
+            --transform SyN[0.1,3,0] \
+                --metric MI["$b0","$t1",1,32] \
+                --metric CC["$fa_staged","$t1",1,4] \
+                --convergence [50x25x10,1e-6,10] --shrink-factors 4x2x1 \
+                --smoothing-sigmas 3x2x1
+        mv outputWarped.nii.gz            "${sub}__t1_warped.nii.gz"
+        mv output0GenericAffine.mat       "${sub}__output0GenericAffine.mat"
+        mv output1InverseWarp.nii.gz      "${sub}__output1InverseWarp.nii.gz"
+        mv output1Warp.nii.gz             "${sub}__output1Warp.nii.gz"
+    )
+
+    et_exec antsApplyTransforms -d 3 -i "$t1_mask_tmp" \
+        -r "${reg_prefix}__t1_warped.nii.gz" \
+        -o "${reg_prefix}__t1_mask_warped.nii.gz" \
+        -n NearestNeighbor \
+        -t "${reg_prefix}__output1Warp.nii.gz" \
+           "${reg_prefix}__output0GenericAffine.mat"
+    scilus_exec scil_image_math.py convert \
+        "${reg_prefix}__t1_mask_warped.nii.gz" \
+        "${reg_prefix}__t1_mask_warped.nii.gz" --data_type uint8 -f
+    rm -f "$t1_mask_tmp"
+fi
+qc_reg_timestamp=$(qc_timestamp)
+
+# ---------------------------------------------------------------------------
+# 5. FreeSurfer
+# ---------------------------------------------------------------------------
+echo "--- Copying FreeSurfer outputs ---"
+cp -r "${freesurfer_dir}/." "${stage}/freesurfer/${sub}/"
+qc_fs_timestamp=$(qc_timestamp)
+
+staging_fragment=$(cat <<EOF
+"staging": {
+    "pft_maps": {"timestamp": "${qc_pft_timestamp}"},
+    "fa_map": {"timestamp": "${qc_fa_timestamp}"},
+    "fodf": {"status": "${qc_fodf_status}", "timestamp": "${qc_fodf_timestamp}"},
+    "t1_registration": {"status": "${qc_reg_status}", "timestamp": "${qc_reg_timestamp}"},
+    "freesurfer": {"timestamp": "${qc_fs_timestamp}"}
+}
+EOF
+)
+qc_write "$qc_json" "$staging_fragment"
+
+# ---------------------------------------------------------------------------
+# 6. Run SET (direct/Docker mode -- freesurfer_a2009s_proper only)
+# ---------------------------------------------------------------------------
+echo "=== Running SET (docker://gamorosino/set_1v1:latest) ==="
+bash "${STEPS_DIR}/04_run_set_direct.sh" \
+    --subject     "$sub" \
+    --staging-dir "$staging_dir" \
+    --output-dir  "$output_dir" \
+    --docker \
+    --random-seeds "$random_seeds" \
+    --nb-iter      "$nb_iter" \
+    --nb-seeds     "$nb_seeds" \
+    --max-parallel-seeds "$max_parallel_seeds" \
+    --qc-json "$qc_json"
+
+# ---------------------------------------------------------------------------
+# 7. Post-process
+# ---------------------------------------------------------------------------
+echo "=== Post-processing tractograms ==="
+tract_dir="${output_dir}/${sub}/F__Surface_Enhanced_Tractography"
+bash "${STEPS_DIR}/05_postprocess.sh" \
+    --subject "$sub" \
+    --set-dir "$tract_dir" \
+    --qc-json "$qc_json"
+
+final="${tract_dir}/all_sets_flipXY_concatenated.tck"
+[[ -f "$final" ]] || { echo "no final tractogram produced"; exit 1; }
+
+mkdir -p tractogram
+cp "$final" tractogram/track.tck
+
+if [[ -z "$fodf_lmax8" ]]; then
+    mkdir -p fodf
+    cp "${dwi_dir}/fodf.nii.gz" fodf/lmax8.nii.gz
+    cp "${dwi_dir}/frf_used.txt" fodf/response.txt 2>/dev/null || true
+fi
+
+if [[ "$n_reg" -ne 3 ]]; then
+    mkdir -p t1_transform
+    cp "${reg_prefix}__output1Warp.nii.gz" t1_transform/warp.nii.gz
+    cp "${reg_prefix}__output1InverseWarp.nii.gz" t1_transform/inverse-warp.nii.gz
+    et_exec ConvertTransformFile 3 "${reg_prefix}__output0GenericAffine.mat" t1_transform/affine.txt
+fi
+
+echo "=== Done ==="

@@ -1,0 +1,18 @@
+{
+  "dwi": "dwi.nii.gz",
+  "bvecs": "dwi.bvecs",
+  "bvals": "dwi.bvals",
+  "freesurfer": "freesurfer/output",
+  "fa": "fa.nii.gz",
+  "t1": "t1.nii.gz",
+  "mask_5tt": "mask.nii.gz",
+  "fodf_lmax8": "",
+  "fodf_response": "",
+  "t1_warp": "",
+  "t1_inv_warp": "",
+  "t1_affine": "",
+  "random_seeds": "1,2,3,4,5,6,7,8",
+  "nb_iter": 1,
+  "nb_seeds": 500000,
+  "max_parallel_seeds": 4
+}
