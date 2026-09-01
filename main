@@ -305,10 +305,10 @@ else
                 --convergence [50x25x10,1e-6,10] --shrink-factors 4x2x1 \
                 --smoothing-sigmas 3x2x1 --verbose
           
-        mv "${stage}/Register_T1/"outputWarped.nii.gz            "${sub}__t1_warped.nii.gz"
-        mv "${stage}/Register_T1/"output0GenericAffine.mat       "${sub}__output0GenericAffine.mat"
-        mv "${stage}/Register_T1/"output1InverseWarp.nii.gz      "${sub}__output1InverseWarp.nii.gz"
-        mv "${stage}/Register_T1/"output1Warp.nii.gz             "${sub}__output1Warp.nii.gz"
+        mv "${stage}/Register_T1/"outputWarped.nii.gz            "${stage}/Register_T1/""${sub}__t1_warped.nii.gz"
+        mv "${stage}/Register_T1/"output0GenericAffine.mat       "${stage}/Register_T1/""${sub}__output0GenericAffine.mat"
+        mv "${stage}/Register_T1/"output1InverseWarp.nii.gz      "${stage}/Register_T1/""${sub}__output1InverseWarp.nii.gz"
+        mv "${stage}/Register_T1/"output1Warp.nii.gz             "${stage}/Register_T1/""${sub}__output1Warp.nii.gz"
     )
 
     et_exec antsApplyTransforms -d 3 -i "$t1_mask_tmp" \
