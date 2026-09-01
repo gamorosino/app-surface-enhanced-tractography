@@ -285,7 +285,7 @@ else
     export SINGULARITYENV_ANTS_RANDOM_SEED=1234
 
     (
-        cd "${stage}/Register_T1"
+       
         et_exec antsRegistration --dimensionality 3 --float 0 \
             --output [output,outputWarped.nii.gz,outputInverseWarped.nii.gz] \
             --interpolation Linear --use-histogram-matching 0 \
@@ -304,10 +304,11 @@ else
                 --metric CC["$fa_staged","$t1",1,4] \
                 --convergence [50x25x10,1e-6,10] --shrink-factors 4x2x1 \
                 --smoothing-sigmas 3x2x1
-        mv outputWarped.nii.gz            "${sub}__t1_warped.nii.gz"
-        mv output0GenericAffine.mat       "${sub}__output0GenericAffine.mat"
-        mv output1InverseWarp.nii.gz      "${sub}__output1InverseWarp.nii.gz"
-        mv output1Warp.nii.gz             "${sub}__output1Warp.nii.gz"
+          
+        mv "${stage}/Register_T1/"outputWarped.nii.gz            "${sub}__t1_warped.nii.gz"
+        mv "${stage}/Register_T1/"output0GenericAffine.mat       "${sub}__output0GenericAffine.mat"
+        mv "${stage}/Register_T1/"output1InverseWarp.nii.gz      "${sub}__output1InverseWarp.nii.gz"
+        mv "${stage}/Register_T1/"output1Warp.nii.gz             "${sub}__output1Warp.nii.gz"
     )
 
     et_exec antsApplyTransforms -d 3 -i "$t1_mask_tmp" \
