@@ -287,7 +287,7 @@ else
     (
        
         et_exec antsRegistration --dimensionality 3 --float 0 \
-            --output [output,outputWarped.nii.gz,outputInverseWarped.nii.gz] \
+            --output ["${stage}/Register_T1/"output,"${stage}/Register_T1/"outputWarped.nii.gz,"${stage}/Register_T1/"outputInverseWarped.nii.gz] \
             --interpolation Linear --use-histogram-matching 0 \
             --winsorize-image-intensities [0.005,0.995] \
             --initial-moving-transform ["$b0","$t1",1] \
