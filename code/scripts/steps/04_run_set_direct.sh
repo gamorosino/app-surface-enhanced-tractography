@@ -35,6 +35,13 @@ Optional:
                         (from a prior run) says it already finished.
   --qc-json <path>      Append a "tracking" stage to this QC json (see
                         code/scripts/utils/qc_json.sh). Skipped if omitted.
+  --transf-linear       Warp surfaces to DWI space using only the affine
+                        transform — matches --transf-linear in
+                        run_tracking.sh, which won't have produced an
+                        output1InverseWarp.nii.gz to pass here.
+  --quiet               Suppress Python warnings (numpy/VTK/trimeshpy noise
+                        from the scilpy scripts) via PYTHONWARNINGS=ignore,
+                        injected into the container despite --cleanenv.
   -h, --help
 EOF
 }
@@ -54,6 +61,8 @@ nb_seeds=500000
 max_parallel_seeds=4
 force_tracking=false
 qc_json=""
+transf_linear=false
+quiet=false
 
 flip_to_lps="-x -y"
 flow_masked_indices="-1 0 6 7 8 9 10 35 42 67"
@@ -105,6 +114,8 @@ while [[ $# -gt 0 ]]; do
         --max-parallel-seeds) max_parallel_seeds="$2"; shift 2 ;;
         --force-tracking) force_tracking=true; shift ;;
         --qc-json) qc_json="$2"; shift 2 ;;
+        --transf-linear) transf_linear=true; shift ;;
+        --quiet) quiet=true; shift ;;
         -h|--help)      usage; exit 0 ;;
         *) echo "Unknown argument: $1"; usage; exit 1 ;;
     esac
@@ -157,6 +168,8 @@ if [[ "$use_docker" == true ]]; then
     fi
     # The Singularity image sets PATH via %environment; Docker import doesn't carry that.
     _SET_PATH="/usr/share/fsl/5.0/bin:/usr/lib/fsl/5.0:/mrtrix3/bin:/opt/minc/1.9.16/bin:/opt/minc/1.9.16/pipeline:/scilpy/dev_scripts:/scilpy/surgery_scripts:/scilpy/scripts:/freesurfer/freesurfer/mni/bin:/freesurfer/freesurfer/bin:/freesurfer/freesurfer/fsfast/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/ants_build/bin"
+    _quiet_env=()
+    [[ "$quiet" == true ]] && _quiet_env=(-e PYTHONWARNINGS=ignore)
     set_run() {
         docker run --rm \
             --user "$(id -u):$(id -g)" \
@@ -165,13 +178,16 @@ if [[ "$use_docker" == true ]]; then
             -e PYTHONPATH=/scilpy \
             -e LD_LIBRARY_PATH=/usr/local/lib/python2.7/dist-packages/vtk \
             -e HOME=/tmp \
+            "${_quiet_env[@]}" \
             "$docker_image" "$@"
     }
 else
     echo "Using Singularity image: ${set_img}"
     BINDS="-B ${staging_dir}:${staging_dir} -B ${output_dir}:${output_dir}"
+    _quiet_env=()
+    [[ "$quiet" == true ]] && _quiet_env=(--env PYTHONWARNINGS=ignore)
     set_run() {
-        ( cd /tmp && singularity exec --cleanenv $BINDS "$set_img" "$@" )
+        ( cd /tmp && singularity exec --cleanenv "${_quiet_env[@]}" $BINDS "$set_img" "$@" )
     }
 fi
 
@@ -338,11 +354,13 @@ set_run scil_concatenate_surfaces_map.py \
 # C: Register surface (T1 → DWI space via ANTs warp)
 # ---------------------------------------------------------------------------
 echo "--- C: Register surface ---"
+warp_args=()
+[[ "$transf_linear" == false ]] && warp_args=(--ants_warp "$inv_warp")
 set_run scil_transform_surface.py \
     "${work}/${subject}__surfaces.vtk" \
     "${work}/${subject}__vtk_transfo.txt" \
     "${work}/${subject}__surfaces_b0.vtk" \
-    --ants_warp "$inv_warp" -f
+    "${warp_args[@]}" -f
 
 # ---------------------------------------------------------------------------
 # D: Surface flow (smooth + flow)

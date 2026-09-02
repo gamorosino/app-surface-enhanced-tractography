@@ -35,6 +35,11 @@
       "id": "max_parallel_seeds", "type": "number", "placeholder": 4,
       "advanced": true, "desc": "Concurrent random-seed tracking chains.",
       "default": 4
+    },
+    "linear_transformation": {
+      "id": "linear_transformation", "type": "boolean",
+      "advanced": true, "desc": "Skip the nonlinear SyN registration/surface-warp stage -- use Rigid+Affine only.",
+      "default": false
     }
   },
   "inputs": [
