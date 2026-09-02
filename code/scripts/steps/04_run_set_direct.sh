@@ -184,10 +184,22 @@ if [[ "$use_docker" == true ]]; then
 else
     echo "Using Singularity image: ${set_img}"
     BINDS="-B ${staging_dir}:${staging_dir} -B ${output_dir}:${output_dir}"
-    _quiet_env=()
-    [[ "$quiet" == true ]] && _quiet_env=(--env PYTHONWARNINGS=ignore)
+    # A native .img built from the original %environment definition sets
+    # PATH/PYTHONPATH itself, but that mechanism doesn't survive when
+    # $set_img is a docker://... reference (e.g. pulled fresh on
+    # brainlife.io) -- Docker images don't carry Singularity's %environment,
+    # so PYTHONPATH=/scilpy is silently missing and every scilpy script
+    # fails with "ImportError: No module named scilpy.io...". Set it
+    # explicitly so both local .img and docker:// sources work the same way.
+    _SET_PATH="/usr/share/fsl/5.0/bin:/usr/lib/fsl/5.0:/mrtrix3/bin:/opt/minc/1.9.16/bin:/opt/minc/1.9.16/pipeline:/scilpy/dev_scripts:/scilpy/surgery_scripts:/scilpy/scripts:/freesurfer/freesurfer/mni/bin:/freesurfer/freesurfer/bin:/freesurfer/freesurfer/fsfast/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/ants_build/bin"
+    _env_flags=(
+        --env "PATH=${_SET_PATH}"
+        --env PYTHONPATH=/scilpy
+        --env LD_LIBRARY_PATH=/usr/local/lib/python2.7/dist-packages/vtk
+    )
+    [[ "$quiet" == true ]] && _env_flags+=(--env PYTHONWARNINGS=ignore)
     set_run() {
-        ( cd /tmp && singularity exec --cleanenv "${_quiet_env[@]}" $BINDS "$set_img" "$@" )
+        ( cd /tmp && singularity exec --cleanenv "${_env_flags[@]}" $BINDS "$set_img" "$@" )
     }
 fi
 
