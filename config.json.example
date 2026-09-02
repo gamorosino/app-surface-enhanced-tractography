@@ -14,5 +14,6 @@
   "random_seeds": "1,2,3,4,5,6,7,8",
   "nb_iter": 1,
   "nb_seeds": 500000,
-  "max_parallel_seeds": 4
+  "max_parallel_seeds": 4,
+  "linear_transformation": false
 }

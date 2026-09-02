@@ -9,7 +9,7 @@
 # Surface-Enhanced Tractography (SET) -- brainlife.io port of
 # github.com/gamorosino/ensemble_tracking's run_tracking.sh.
 #
-# Scope: this app always uses the direct/Docker execution path
+# Scope: this app always uses the direct/Singularity execution path
 # (04_run_set_direct.sh) rather than the Nextflow pipeline the original repo
 # also supports. Direct mode only replicates the "freesurfer_a2009s_proper"
 # profile, so that is the only profile this app supports -- the other 7
@@ -49,6 +49,7 @@ TASK_DIR="$(pwd)"
 # always pull the public image below.
 ET_IMAGE="${ET_IMAGE_OVERRIDE:-docker://gamorosino/ensemble_tracking:latest}"
 SCILUS_IMAGE="docker://scilus/scilus:1.6.0"
+SET_IMAGE="${SET_IMAGE_OVERRIDE:-docker://gamorosino/set_1v1:latest}"
 
 # ---------------------------------------------------------------------------
 # Read config.json (CONFIG env var lets main_cli.sh point at a different path)
@@ -72,6 +73,7 @@ random_seeds=$(jq -r '.random_seeds // "1,2,3,4,5,6,7,8"' "$CONFIG")
 nb_iter=$(jq -r '.nb_iter // 1' "$CONFIG")
 nb_seeds=$(jq -r '.nb_seeds // 500000' "$CONFIG")
 max_parallel_seeds=$(jq -r '.max_parallel_seeds // 4' "$CONFIG")
+linear_transformation=$(jq -r '.linear_transformation // false' "$CONFIG")
 
 [[ -f "$dwi" ]] || { echo "ERROR: dwi not found: $dwi"; exit 1; }
 [[ -d "$freesurfer_dir" ]] || { echo "ERROR: freesurfer dir not found: $freesurfer_dir"; exit 1; }
@@ -284,8 +286,21 @@ else
     export SINGULARITYENV_OMP_NUM_THREADS=1 SINGULARITYENV_OPENBLAS_NUM_THREADS=1
     export SINGULARITYENV_ANTS_RANDOM_SEED=1234
 
+    # SyN stage -- omitted entirely under linear_transformation, so ANTs
+    # collapses Rigid+Affine into a single output0GenericAffine.mat with no
+    # warp files.
+    syn_args=()
+    if [[ "$linear_transformation" == false ]]; then
+        syn_args=(
+            --transform SyN[0.1,3,0]
+                --metric MI["$b0","$t1",1,32]
+                --metric CC["$fa_staged","$t1",1,4]
+                --convergence [50x25x10,1e-6,10] --shrink-factors 4x2x1
+                --smoothing-sigmas 3x2x1
+        )
+    fi
+
     (
-       
         et_exec antsRegistration --dimensionality 3 --float 0 \
             --output ["${stage}/Register_T1/"output,"${stage}/Register_T1/"outputWarped.nii.gz,"${stage}/Register_T1/"outputInverseWarped.nii.gz] \
             --interpolation Linear --use-histogram-matching 0 \
@@ -299,24 +314,28 @@ else
                 --metric MI["$b0","$t1",1,32,Regular,0.25] \
                 --convergence [500x250x125x50,1e-6,10] --shrink-factors 8x4x2x1 \
                 --smoothing-sigmas 3x2x1x0 \
-            --transform SyN[0.1,3,0] \
-                --metric MI["$b0","$t1",1,32] \
-                --metric CC["$fa_staged","$t1",1,4] \
-                --convergence [50x25x10,1e-6,10] --shrink-factors 4x2x1 \
-                --smoothing-sigmas 3x2x1 --verbose
-          
+            "${syn_args[@]}" --verbose
+
         mv "${stage}/Register_T1/"outputWarped.nii.gz            "${stage}/Register_T1/""${sub}__t1_warped.nii.gz"
         mv "${stage}/Register_T1/"output0GenericAffine.mat       "${stage}/Register_T1/""${sub}__output0GenericAffine.mat"
-        mv "${stage}/Register_T1/"output1InverseWarp.nii.gz      "${stage}/Register_T1/""${sub}__output1InverseWarp.nii.gz"
-        mv "${stage}/Register_T1/"output1Warp.nii.gz             "${stage}/Register_T1/""${sub}__output1Warp.nii.gz"
+        [[ -f "${stage}/Register_T1/"output1InverseWarp.nii.gz ]] && \
+            mv "${stage}/Register_T1/"output1InverseWarp.nii.gz  "${stage}/Register_T1/""${sub}__output1InverseWarp.nii.gz"
+        [[ -f "${stage}/Register_T1/"output1Warp.nii.gz ]] && \
+            mv "${stage}/Register_T1/"output1Warp.nii.gz         "${stage}/Register_T1/""${sub}__output1Warp.nii.gz"
     )
+
+    # Transform(s) to apply for everything downstream (mask-warping here,
+    # and surface-warping in 04_run_set_direct.sh via --transf-linear):
+    # affine-only under linear_transformation, since there's no
+    # output1Warp.nii.gz to add.
+    reg_apply_transforms=("${reg_prefix}__output0GenericAffine.mat")
+    [[ "$linear_transformation" == false ]] && reg_apply_transforms=("${reg_prefix}__output1Warp.nii.gz" "${reg_apply_transforms[@]}")
 
     et_exec antsApplyTransforms -d 3 -i "$t1_mask_tmp" \
         -r "${reg_prefix}__t1_warped.nii.gz" \
         -o "${reg_prefix}__t1_mask_warped.nii.gz" \
         -n NearestNeighbor \
-        -t "${reg_prefix}__output1Warp.nii.gz" \
-           "${reg_prefix}__output0GenericAffine.mat"
+        -t "${reg_apply_transforms[@]}"
     scilus_exec scil_image_math.py convert \
         "${reg_prefix}__t1_mask_warped.nii.gz" \
         "${reg_prefix}__t1_mask_warped.nii.gz" --data_type uint8 -f
@@ -336,7 +355,7 @@ staging_fragment=$(cat <<EOF
     "pft_maps": {"timestamp": "${qc_pft_timestamp}"},
     "fa_map": {"timestamp": "${qc_fa_timestamp}"},
     "fodf": {"status": "${qc_fodf_status}", "timestamp": "${qc_fodf_timestamp}"},
-    "t1_registration": {"status": "${qc_reg_status}", "timestamp": "${qc_reg_timestamp}"},
+    "t1_registration": {"status": "${qc_reg_status}", "linear_transformation": ${linear_transformation}, "timestamp": "${qc_reg_timestamp}"},
     "freesurfer": {"timestamp": "${qc_fs_timestamp}"}
 }
 EOF
@@ -344,19 +363,22 @@ EOF
 qc_write "$qc_json" "$staging_fragment"
 
 # ---------------------------------------------------------------------------
-# 6. Run SET (direct/Docker mode -- freesurfer_a2009s_proper only)
+# 6. Run SET (direct/Singularity mode -- freesurfer_a2009s_proper only)
 # ---------------------------------------------------------------------------
-echo "=== Running SET (docker://gamorosino/set_1v1:latest) ==="
+echo "=== Running SET (${SET_IMAGE}) ==="
+set_extra_args=()
+[[ "$linear_transformation" == true ]] && set_extra_args+=(--transf-linear)
 bash "${STEPS_DIR}/04_run_set_direct.sh" \
     --subject     "$sub" \
     --staging-dir "$staging_dir" \
     --output-dir  "$output_dir" \
-    --docker \
+    --set-img     "$SET_IMAGE" \
     --random-seeds "$random_seeds" \
     --nb-iter      "$nb_iter" \
     --nb-seeds     "$nb_seeds" \
     --max-parallel-seeds "$max_parallel_seeds" \
-    --qc-json "$qc_json"
+    --qc-json "$qc_json" \
+    "${set_extra_args[@]}"
 
 # ---------------------------------------------------------------------------
 # 7. Post-process
@@ -382,8 +404,10 @@ fi
 
 if [[ "$n_reg" -ne 3 ]]; then
     mkdir -p t1_transform
-    cp "${reg_prefix}__output1Warp.nii.gz" t1_transform/warp.nii.gz
-    cp "${reg_prefix}__output1InverseWarp.nii.gz" t1_transform/inverse-warp.nii.gz
+    if [[ "$linear_transformation" == false ]]; then
+        cp "${reg_prefix}__output1Warp.nii.gz" t1_transform/warp.nii.gz
+        cp "${reg_prefix}__output1InverseWarp.nii.gz" t1_transform/inverse-warp.nii.gz
+    fi
     et_exec ConvertTransformFile 3 "${reg_prefix}__output0GenericAffine.mat" t1_transform/affine.txt
 fi
 

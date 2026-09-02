@@ -42,6 +42,9 @@ Optional keys (skip the corresponding computation when given):
 
 Tunable (see README.md):
   --random_seeds --nb_iter --nb_seeds --max_parallel_seeds
+  --linear_transformation   (true/false) skip the nonlinear SyN stage --
+                            Rigid+Affine only, matching --transf-linear
+                            in the source repo's run_tracking.sh
 
 Options:
   --config PATH     write generated config to PATH instead of ./config.json
