@@ -37,6 +37,7 @@
 # This app uses the corrected indices, not the original script's.
 
 set -euo pipefail
+trap 'echo "ERROR: command failed at line $LINENO (exit $?) -- cmd: $BASH_COMMAND" >&2' ERR
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STEPS_DIR="${REPO_DIR}/code/scripts/steps"
@@ -127,11 +128,11 @@ done
 
 et_exec() {
     local host_pwd; host_pwd="$(pwd)"
-    ( cd / && singularity exec --cleanenv --pwd "${host_pwd}" "${EXTRA_BINDS[@]}" "$ET_IMAGE" "$@" )
+    ( cd / && singularity exec --quiet --cleanenv --pwd "${host_pwd}" "${EXTRA_BINDS[@]}" "$ET_IMAGE" "$@" )
 }
 scilus_exec() {
     local host_pwd; host_pwd="$(pwd)"
-    ( cd / && singularity exec --cleanenv --pwd "${host_pwd}" "${EXTRA_BINDS[@]}" "$SCILUS_IMAGE" "$@" )
+    ( cd / && singularity exec --quiet --cleanenv --pwd "${host_pwd}" "${EXTRA_BINDS[@]}" "$SCILUS_IMAGE" "$@" )
 }
 
 imm_squeeze() {
