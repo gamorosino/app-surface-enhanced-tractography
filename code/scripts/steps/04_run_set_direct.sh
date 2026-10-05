@@ -199,7 +199,8 @@ else
     )
     [[ "$quiet" == true ]] && _env_flags+=(--env PYTHONWARNINGS=ignore)
     set_run() {
-        ( cd /tmp && singularity exec --quiet --cleanenv "${_env_flags[@]}" $BINDS "$set_img" "$@" )
+        ( cd /tmp && singularity exec --cleanenv "${_env_flags[@]}" $BINDS "$set_img" "$@" ) \
+            2> >(grep -Ev '^(INFO|WARNING):' >&2)
     }
 fi
 

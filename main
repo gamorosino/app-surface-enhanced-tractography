@@ -128,11 +128,13 @@ done
 
 et_exec() {
     local host_pwd; host_pwd="$(pwd)"
-    ( cd / && singularity exec --quiet --cleanenv --pwd "${host_pwd}" "${EXTRA_BINDS[@]}" "$ET_IMAGE" "$@" )
+    ( cd / && singularity exec --cleanenv --pwd "${host_pwd}" "${EXTRA_BINDS[@]}" "$ET_IMAGE" "$@" ) \
+        2> >(grep -Ev '^(INFO|WARNING):' >&2)
 }
 scilus_exec() {
     local host_pwd; host_pwd="$(pwd)"
-    ( cd / && singularity exec --quiet --cleanenv --pwd "${host_pwd}" "${EXTRA_BINDS[@]}" "$SCILUS_IMAGE" "$@" )
+    ( cd / && singularity exec --cleanenv --pwd "${host_pwd}" "${EXTRA_BINDS[@]}" "$SCILUS_IMAGE" "$@" ) \
+        2> >(grep -Ev '^(INFO|WARNING):' >&2)
 }
 
 imm_squeeze() {
