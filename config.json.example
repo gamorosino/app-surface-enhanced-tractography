@@ -15,5 +15,6 @@
   "nb_iter": 1,
   "nb_seeds": 500000,
   "max_parallel_seeds": 4,
-  "linear_transformation": false
+  "linear_transformation": false,
+  "ants_verbose": false
 }

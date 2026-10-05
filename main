@@ -74,6 +74,7 @@ nb_iter=$(jq -r '.nb_iter // 1' "$CONFIG")
 nb_seeds=$(jq -r '.nb_seeds // 500000' "$CONFIG")
 max_parallel_seeds=$(jq -r '.max_parallel_seeds // 4' "$CONFIG")
 linear_transformation=$(jq -r '.linear_transformation // false' "$CONFIG")
+ants_verbose=$(jq -r '.ants_verbose // false' "$CONFIG")
 
 [[ -f "$dwi" ]] || { echo "ERROR: dwi not found: $dwi"; exit 1; }
 [[ -d "$freesurfer_dir" ]] || { echo "ERROR: freesurfer dir not found: $freesurfer_dir"; exit 1; }
@@ -299,6 +300,8 @@ else
                 --smoothing-sigmas 3x2x1
         )
     fi
+    ants_verbose_flag=()
+    [[ "$ants_verbose" == true ]] && ants_verbose_flag=(--verbose)
 
     (
         et_exec antsRegistration --dimensionality 3 --float 0 \
@@ -314,7 +317,7 @@ else
                 --metric MI["$b0","$t1",1,32,Regular,0.25] \
                 --convergence [500x250x125x50,1e-6,10] --shrink-factors 8x4x2x1 \
                 --smoothing-sigmas 3x2x1x0 \
-            "${syn_args[@]}" --verbose
+            "${syn_args[@]}" "${ants_verbose_flag[@]}"
 
         mv "${stage}/Register_T1/"outputWarped.nii.gz            "${stage}/Register_T1/""${sub}__t1_warped.nii.gz"
         mv "${stage}/Register_T1/"output0GenericAffine.mat       "${stage}/Register_T1/""${sub}__output0GenericAffine.mat"
