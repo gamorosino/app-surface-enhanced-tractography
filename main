@@ -406,19 +406,26 @@ final="${tract_dir}/all_sets_flipXY_concatenated.tck"
 mkdir -p tractogram
 cp "$final" tractogram/track.tck
 
+mkdir -p fodf
 if [[ -z "$fodf_lmax8" ]]; then
-    mkdir -p fodf
     cp "${dwi_dir}/fodf.nii.gz" fodf/lmax8.nii.gz
     cp "${dwi_dir}/frf_used.txt" fodf/response.txt 2>/dev/null || true
+else
+    cp "$fodf_lmax8" fodf/lmax8.nii.gz
+    [[ -n "$fodf_response" ]] && cp "$fodf_response" fodf/response.txt || true
 fi
 
+mkdir -p t1_transform
 if [[ "$n_reg" -ne 3 ]]; then
-    mkdir -p t1_transform
     if [[ "$linear_transformation" == false ]]; then
         cp "${reg_prefix}__output1Warp.nii.gz" t1_transform/warp.nii.gz
         cp "${reg_prefix}__output1InverseWarp.nii.gz" t1_transform/inverse-warp.nii.gz
     fi
     et_exec ConvertTransformFile 3 "${reg_prefix}__output0GenericAffine.mat" t1_transform/affine.txt
+else
+    [[ -n "$t1_warp"     ]] && cp "$t1_warp"     t1_transform/warp.nii.gz         || true
+    [[ -n "$t1_inv_warp" ]] && cp "$t1_inv_warp" t1_transform/inverse-warp.nii.gz || true
+    [[ -n "$t1_affine"   ]] && cp "$t1_affine"   t1_transform/affine.txt           || true
 fi
 
 echo "=== Done ==="
