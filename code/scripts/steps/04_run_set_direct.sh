@@ -6,6 +6,31 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../utils/qc_json.sh"
 
+# ---------------------------------------------------------------------------
+# Parallel job helpers.
+# _bg <label> <cmd> [args...] — launch cmd in background, log to
+#   ${work}/bg_<label>.log, push "label:pid" onto _BG_JOBS.
+# _wait_bg — join all jobs in _BG_JOBS, clear the array; exit non-zero if any
+#   job failed (prints which label and log file).
+# ---------------------------------------------------------------------------
+_BG_JOBS=()
+_bg() {
+    local label="$1"; shift
+    mkdir -p "${work}"
+    "$@" >>"${work}/bg_${label}.log" 2>&1 &
+    _BG_JOBS+=("${label}:$!")
+}
+_wait_bg() {
+    local failed=0
+    for spec in "${_BG_JOBS[@]:-}"; do
+        [[ -z "$spec" ]] && continue
+        local label="${spec%%:*}" pid="${spec#*:}"
+        wait "$pid" || { echo "ERROR: parallel step '${label}' failed — see ${work}/bg_${label}.log" >&2; failed=1; }
+    done
+    _BG_JOBS=()
+    return $failed
+}
+
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
@@ -31,6 +56,11 @@ Optional:
   --max-parallel-seeds <n>
                         Run this many random-seed chains concurrently [4]
                         Each chain's iterations still run sequentially.
+  --tracking-processes <n>
+                        Parallel sub-processes inside each tracking container [1]
+                        Splits seed points into N chunks and merges outputs.
+                        Composes with --max-parallel-seeds:
+                          max-parallel-seeds=8 x tracking-processes=4 = 32 CPUs
   --force-tracking      Redo every seed/iteration even if its done-marker
                         (from a prior run) says it already finished.
   --qc-json <path>      Append a "tracking" stage to this QC json (see
@@ -59,6 +89,7 @@ random_seeds="1,2,3,4,5,6,7,8"
 nb_iter=1
 nb_seeds=500000
 max_parallel_seeds=4
+tracking_processes=1
 force_tracking=false
 qc_json=""
 transf_linear=false
@@ -112,6 +143,7 @@ while [[ $# -gt 0 ]]; do
         --nb-iter)      nb_iter="$2";      shift 2 ;;
         --nb-seeds)     nb_seeds="$2";     shift 2 ;;
         --max-parallel-seeds) max_parallel_seeds="$2"; shift 2 ;;
+        --tracking-processes) tracking_processes="$2"; shift 2 ;;
         --force-tracking) force_tracking=true; shift ;;
         --qc-json) qc_json="$2"; shift 2 ;;
         --transf-linear) transf_linear=true; shift ;;
@@ -141,7 +173,12 @@ fodf="${input_root}/FODF_Metrics/fodf.nii.gz"
 map_include="${input_root}/PFT_Maps/${subject}__map_include.nii.gz"
 map_exclude="${input_root}/PFT_Maps/${subject}__map_exclude.nii.gz"
 fa="${input_root}/DTI_Metrics/${subject}__fa.nii.gz"
-affine="${input_root}/Register_T1/${subject}__output0GenericAffine.mat"
+# Prefer .mat; fall back to .txt when ConvertTransformFile couldn't produce .mat
+if [[ -f "${input_root}/Register_T1/${subject}__output0GenericAffine.mat" ]]; then
+    affine="${input_root}/Register_T1/${subject}__output0GenericAffine.mat"
+else
+    affine="${input_root}/Register_T1/${subject}__output0GenericAffine.txt"
+fi
 inv_warp="${input_root}/Register_T1/${subject}__output1InverseWarp.nii.gz"
 
 wmparc="${fs_dir}/mri/wmparc.mgz"
@@ -160,11 +197,21 @@ if [[ "$use_docker" == true ]]; then
     # Mounting the plain parent directory works around this.
     _staging_mnt=$(dirname "$(stat --format="%m" "${staging_dir}")")
     _output_mnt=$(dirname "$(stat --format="%m" "${output_dir}")")
+    # If mount point is the root filesystem, bind-mount the actual directory
+    # instead of trying to bind-mount / (which Docker rejects).
+    [[ "$_staging_mnt" == "/" ]] && _staging_mnt="$staging_dir"
+    [[ "$_output_mnt"  == "/" ]] && _output_mnt="$output_dir"
     # Deduplicate in case both resolve to the same parent
     if [[ "$_staging_mnt" == "$_output_mnt" ]]; then
         _vol_flags="-v ${_staging_mnt}:${_staging_mnt}"
     else
         _vol_flags="-v ${_staging_mnt}:${_staging_mnt} -v ${_output_mnt}:${_output_mnt}"
+    fi
+    # When using internal process parallelism, mount the parallel wrapper script
+    # so it is callable inside the container alongside the original script.
+    _pft_parallel_script_host="${SCRIPT_DIR}/../utils/scil_surface_pft_parallel.py"
+    if [[ "$tracking_processes" -gt 1 ]]; then
+        _vol_flags="${_vol_flags} -v ${_pft_parallel_script_host}:/scilpy/scripts/scil_surface_pft_parallel.py"
     fi
     # The Singularity image sets PATH via %environment; Docker import doesn't carry that.
     _SET_PATH="/usr/share/fsl/5.0/bin:/usr/lib/fsl/5.0:/mrtrix3/bin:/opt/minc/1.9.16/bin:/opt/minc/1.9.16/pipeline:/scilpy/dev_scripts:/scilpy/surgery_scripts:/scilpy/scripts:/freesurfer/freesurfer/mni/bin:/freesurfer/freesurfer/bin:/freesurfer/freesurfer/fsfast/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/ants_build/bin"
@@ -184,6 +231,12 @@ if [[ "$use_docker" == true ]]; then
 else
     echo "Using Singularity image: ${set_img}"
     BINDS="-B ${staging_dir}:${staging_dir} -B ${output_dir}:${output_dir}"
+    # When using internal process parallelism, bind-mount the parallel wrapper
+    # into the container's /scilpy/scripts/ so it is callable from PATH.
+    if [[ "$tracking_processes" -gt 1 ]]; then
+        _pft_par_host="$(realpath "${SCRIPT_DIR}/../utils/scil_surface_pft_parallel.py")"
+        BINDS="${BINDS} -B ${_pft_par_host}:/scilpy/scripts/scil_surface_pft_parallel.py"
+    fi
     # A native .img built from the original %environment definition sets
     # PATH/PYTHONPATH itself, but that mechanism doesn't survive when
     # $set_img is a docker://... reference (e.g. pulled fresh on
@@ -205,76 +258,86 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# PFT script selection: use the parallel wrapper when tracking_processes > 1.
+# _pft_proc_args is empty for the standard case (no overhead).
+# ---------------------------------------------------------------------------
+if [[ "$tracking_processes" -gt 1 ]]; then
+    _pft_script="scil_surface_pft_parallel.py"
+    _pft_proc_args=(--processes "$tracking_processes")
+else
+    _pft_script="scil_surface_pft_dipy.py"
+    _pft_proc_args=()
+fi
+
 echo "=== SET direct pipeline: ${subject} ==="
 
 # ---------------------------------------------------------------------------
-# A: Convert FreeSurfer surfaces (.pial/.white → .vtk)
+# A: Convert FreeSurfer surfaces (.pial/.white → .vtk) + label volume + ANTs transform
+#    All six conversions are independent — run in parallel.
+#    Then flip all four surfaces to LPS in parallel.
 # ---------------------------------------------------------------------------
-echo "--- A: Convert FreeSurfer surfaces ---"
-set_run mris_convert --to-scanner "$lh_pial"  "${work}/${subject}__lh_pial.vtk"
-set_run mris_convert --to-scanner "$rh_pial"  "${work}/${subject}__rh_pial.vtk"
-set_run mris_convert --to-scanner "$lh_white" "${work}/${subject}__lh_white.vtk"
-set_run mris_convert --to-scanner "$rh_white" "${work}/${subject}__rh_white.vtk"
+echo "--- A: Convert surfaces + transforms (parallel) ---"
+_ts_A_start=$(qc_timestamp); _t0_A=$(qc_epoch)
+_BG_JOBS=()
+_bg "A_lhp"  set_run mris_convert --to-scanner "$lh_pial"  "${work}/${subject}__lh_pial.vtk"
+_bg "A_rhp"  set_run mris_convert --to-scanner "$rh_pial"  "${work}/${subject}__rh_pial.vtk"
+_bg "A_lhw"  set_run mris_convert --to-scanner "$lh_white" "${work}/${subject}__lh_white.vtk"
+_bg "A_rhw"  set_run mris_convert --to-scanner "$rh_white" "${work}/${subject}__rh_white.vtk"
+_bg "A_mri"  set_run mri_convert "$wmparc" "${work}/${subject}__labels.nii.gz"
+_bg "A_ants" set_run ConvertTransformFile 3 "$affine" "${work}/${subject}__vtk_transfo.txt" --hm
+_wait_bg
 
-# A: Convert label volume (wmparc.mgz → .nii.gz)
-echo "--- A: Convert label volume ---"
-set_run mri_convert "$wmparc" "${work}/${subject}__labels.nii.gz"
-
-# A: Convert ANTs affine transform → VTK format
-echo "--- A: Convert ANTs transform ---"
-set_run ConvertTransformFile 3 "$affine" "${work}/${subject}__vtk_transfo.txt" --hm
-
-# A: Flip surfaces to LPS
-echo "--- A: Flip surfaces to LPS ---"
+echo "--- A: Flip surfaces to LPS (parallel) ---"
+_BG_JOBS=()
 for surf in lh_pial rh_pial lh_white rh_white; do
-    set_run scil_flip_surface.py \
+    _bg "A_flip_${surf}" set_run scil_flip_surface.py \
         "${work}/${subject}__${surf}.vtk" \
         "${work}/${subject}__${surf}_lps.vtk" \
         $flip_to_lps -f
 done
+_wait_bg
+_ts_A_end=$(qc_timestamp); _t1_A=$(qc_epoch)
 
 # ---------------------------------------------------------------------------
-# B: Surface masks (flow / seed / intersections)
+# B: Surface masks (flow / seed / intersections / zero) + labels + ROI surfaces.
+#    Phase 1: all surface mask/label calls AND all ROI VTK generation are
+#             independent — run them all in parallel.
+#    Phase 2: ROI mask calls (each needs its ROI VTK from phase 1) — parallel.
+#    Phase 3: concatenations — sequential (need all masks).
 # ---------------------------------------------------------------------------
-echo "--- B: Surface masks ---"
+echo "--- B: Surface masks + labels + ROI surfaces [phase 1, parallel] ---"
+_ts_B_start=$(qc_timestamp); _t0_B=$(qc_epoch)
+_BG_JOBS=()
 for hemi in lh rh; do
     annot_var="${hemi}_annot"
     surf_vtk="${work}/${subject}__${hemi}_white.vtk"
     annot="${!annot_var}"
 
-    set_run scil_surface.py "$surf_vtk" --annot "$annot" \
+    _bg "B_${hemi}_flow"  set_run scil_surface.py "$surf_vtk" --annot "$annot" \
         -i $flow_masked_indices --inverse_mask \
         --save_vts_mask "${work}/${subject}__${hemi}_flow_mask.npy" -f
 
-    set_run scil_surface.py "$surf_vtk" --annot "$annot" \
+    _bg "B_${hemi}_seed"  set_run scil_surface.py "$surf_vtk" --annot "$annot" \
         -i $seed_masked_indices --inverse_mask \
         --save_vts_mask "${work}/${subject}__${hemi}_seed_mask.npy" -f
 
-    set_run scil_surface.py "$surf_vtk" --annot "$annot" \
+    _bg "B_${hemi}_inter" set_run scil_surface.py "$surf_vtk" --annot "$annot" \
         -i $intersections_masked_indices --inverse_mask \
         --save_vts_mask "${work}/${subject}__${hemi}_intersections_mask.npy" -f
 
-    set_run scil_surface.py "$surf_vtk" --vts_val 0.0 \
+    _bg "B_${hemi}_zero"  set_run scil_surface.py "$surf_vtk" --vts_val 0.0 \
         --save_vts_mask "${work}/${subject}__${hemi}_zero_mask.npy" -f
-done
 
-# B: Surface labels
-echo "--- B: Surface labels ---"
-for hemi in lh rh; do
-    annot_var="${hemi}_annot"
-    surf_vtk="${work}/${subject}__${hemi}_white.vtk"
-    annot="${!annot_var}"
-    set_run scil_surface.py "$surf_vtk" --annot "$annot" \
+    _bg "B_${hemi}_label" set_run scil_surface.py "$surf_vtk" --annot "$annot" \
         --save_vts_label "${work}/${subject}__${hemi}_labels.npy" -f
 done
 
-# B: Generate ROI surfaces from label volume
-echo "--- B: Generate ROIs ---"
 roi_vtks=()
 for i in "${!rois_indices[@]}"; do
     idx_str=$(printf "%04d" "$i")
     roi_vtk="${work}/${subject}__roi${idx_str}.vtk"
-    set_run scil_surface_from_volume.py "${work}/${subject}__labels.nii.gz" \
+    _bg "B_roi${idx_str}" set_run scil_surface_from_volume.py \
+        "${work}/${subject}__labels.nii.gz" \
         "$roi_vtk" \
         --index ${rois_indices[$i]} \
         --closing "$rois_closing" \
@@ -283,20 +346,22 @@ for i in "${!rois_indices[@]}"; do
         --vox2vtk --fill --max_label -f
     roi_vtks+=("$roi_vtk")
 done
+_wait_bg
 
-# B: ROI masks
-echo "--- B: ROI masks ---"
+echo "--- B: ROI masks [phase 2, parallel] ---"
+_BG_JOBS=()
 for roi_vtk in "${roi_vtks[@]}"; do
     base="${roi_vtk%.vtk}"
-    set_run scil_surface.py "$roi_vtk" --vts_val 0.0 \
+    name="$(basename "${base}")"
+    _bg "B_${name}_flow"  set_run scil_surface.py "$roi_vtk" --vts_val 0.0 \
         --save_vts_mask "${base}_flow_mask.npy" -f
-    set_run scil_surface.py "$roi_vtk" --vts_val 1.0 \
+    _bg "B_${name}_inter" set_run scil_surface.py "$roi_vtk" --vts_val 1.0 \
         --save_vts_mask "${base}_intersections_mask.npy" -f
-    set_run scil_surface_map_from_volume.py "$roi_vtk" "$fa" \
+    _bg "B_${name}_seed"  set_run scil_surface_map_from_volume.py "$roi_vtk" "$fa" \
         "${base}_seed_mask.npy" --binarize --binarize_value 0.5 -f
 done
+_wait_bg
 
-# B: Concatenate surfaces
 echo "--- B: Concatenate surfaces ---"
 roi_vtk_list="${roi_vtks[*]}"
 set_run scil_concatenate_surfaces.py \
@@ -310,7 +375,6 @@ set_run scil_concatenate_surfaces.py \
     --out_surface_type_map "${work}/${subject}__surfaces_type.npy" \
     --out_concatenated_surface "${work}/${subject}__surfaces.vtk" -f
 
-# B: Concatenate masks
 echo "--- B: Concatenate masks ---"
 roi_flow_masks=()
 roi_seed_masks=()
@@ -349,7 +413,6 @@ set_run scil_concatenate_surfaces_map.py \
     --inner_surfaces_map ${roi_inter_masks[*]} \
     --out_map "${work}/${subject}__intersections_mask.npy" -f
 
-# B: Concatenate labels
 echo "--- B: Concatenate labels ---"
 set_run scil_concatenate_surfaces_map.py \
     "${work}/${subject}__lh_labels.npy" \
@@ -362,11 +425,13 @@ set_run scil_concatenate_surfaces_map.py \
     --unique_id \
     --out_id_map "${work}/${subject}__unique_id.txt" \
     --indices_to_remove $unused_labels -f
+_ts_B_end=$(qc_timestamp); _t1_B=$(qc_epoch)
 
 # ---------------------------------------------------------------------------
 # C: Register surface (T1 → DWI space via ANTs warp)
 # ---------------------------------------------------------------------------
 echo "--- C: Register surface ---"
+_ts_C_start=$(qc_timestamp); _t0_C=$(qc_epoch)
 warp_args=()
 [[ "$transf_linear" == false ]] && warp_args=(--ants_warp "$inv_warp")
 set_run scil_transform_surface.py \
@@ -374,11 +439,13 @@ set_run scil_transform_surface.py \
     "${work}/${subject}__vtk_transfo.txt" \
     "${work}/${subject}__surfaces_b0.vtk" \
     "${warp_args[@]}" -f
+_ts_C_end=$(qc_timestamp); _t1_C=$(qc_epoch)
 
 # ---------------------------------------------------------------------------
 # D: Surface flow (smooth + flow)
 # ---------------------------------------------------------------------------
 echo "--- D: Surface flow ---"
+_ts_D_start=$(qc_timestamp); _t0_D=$(qc_epoch)
 flow_vtk="${work}/${subject}__flow_${surf_flow_nb_step}_${surf_flow_step_size}.vtk"
 flow_hdf5="${work}/${subject}__flow_${surf_flow_nb_step}_${surf_flow_step_size}.hdf5"
 
@@ -404,11 +471,13 @@ else
     cp "${work}/${subject}__smoothed.vtk" "$flow_vtk"
     touch "$flow_hdf5"
 fi
+_ts_D_end=$(qc_timestamp); _t1_D=$(qc_epoch)
 
 # ---------------------------------------------------------------------------
 # E: Initial seeding map
 # ---------------------------------------------------------------------------
 echo "--- E: Initial seeding map ---"
+_ts_E_start=$(qc_timestamp); _t0_E=$(qc_epoch)
 set_run scil_surface_seed_map.py \
     "$flow_vtk" \
     "${work}/${subject}__seeding_map_0.npy" \
@@ -419,6 +488,7 @@ set_run scil_surface_seed_map.py \
     "$flow_vtk" \
     "${work}/${subject}__zeros_tri_map.npy" \
     --zeros_map -f
+_ts_E_end=$(qc_timestamp); _t1_E=$(qc_epoch)
 
 # ---------------------------------------------------------------------------
 # F: SET tracking (each random seed's iteration chain is independent of the
@@ -426,6 +496,7 @@ set_run scil_surface_seed_map.py \
 #    chains run as background jobs, up to $max_parallel_seeds at a time.
 # ---------------------------------------------------------------------------
 echo "--- F: SET tracking ---"
+_ts_F_start=$(qc_timestamp); _t0_F=$(qc_epoch)
 IFS=',' read -ra rand_seeds <<< "$random_seeds"
 
 run_seed_chain() {
@@ -470,11 +541,12 @@ run_seed_chain() {
             "${results}/${subject}__seeds_${tag}.npz" \
             --random_number_generator "$rand_id" -f
 
-        # PFT tractography
-        set_run scil_surface_pft_dipy.py \
+        # PFT tractography — uses parallel wrapper when tracking_processes > 1
+        set_run "$_pft_script" \
             "$fodf" "$map_include" "$map_exclude" "$flow_vtk" \
             "${results}/${subject}__seeds_${tag}.npz" \
             "${results}/${subject}__set_${tag}.trk" \
+            "${_pft_proc_args[@]}" \
             --algo "$tractography_algo" \
             --step "$tractography_step" \
             --theta "$tractography_theta" \
@@ -575,11 +647,20 @@ while [[ "$idx" -lt "${#rand_seeds[@]}" ]]; do
         qc_seeds_json="${qc_seeds_json}\"seed_${rid_pad}\": {\"status\": \"${seed_status}\", \"iterations\": ${nb_iter}, \"log\": \"${batch_logs[$b]}\", \"timestamp\": \"$(qc_timestamp)\"}, "
     done
 done
+_ts_F_end=$(qc_timestamp); _t1_F=$(qc_epoch)
 
 if [[ -n "$qc_json" ]]; then
     tracking_fragment=$(cat <<EOF
 "tracking": {
-    "params": {"random_seeds": "${random_seeds}", "nb_iter": ${nb_iter}, "nb_seeds": ${nb_seeds}, "max_parallel_seeds": ${max_parallel_seeds}, "algo": "${tractography_algo}", "step": ${tractography_step}, "theta": ${tractography_theta}, "sfthres": ${tractography_sfthres}},
+    "params": {"random_seeds": "${random_seeds}", "nb_iter": ${nb_iter}, "nb_seeds": ${nb_seeds}, "max_parallel_seeds": ${max_parallel_seeds}, "tracking_processes": ${tracking_processes}, "algo": "${tractography_algo}", "step": ${tractography_step}, "theta": ${tractography_theta}, "sfthres": ${tractography_sfthres}},
+    "steps": {
+        "A_convert": {"start": "${_ts_A_start}", "end": "${_ts_A_end}", "duration_s": $((_t1_A - _t0_A))},
+        "B_surfaces": {"start": "${_ts_B_start}", "end": "${_ts_B_end}", "duration_s": $((_t1_B - _t0_B))},
+        "C_register":  {"start": "${_ts_C_start}", "end": "${_ts_C_end}", "duration_s": $((_t1_C - _t0_C))},
+        "D_flow":      {"start": "${_ts_D_start}", "end": "${_ts_D_end}", "duration_s": $((_t1_D - _t0_D))},
+        "E_seed_map":  {"start": "${_ts_E_start}", "end": "${_ts_E_end}", "duration_s": $((_t1_E - _t0_E))},
+        "F_tracking":  {"start": "${_ts_F_start}", "end": "${_ts_F_end}", "duration_s": $((_t1_F - _t0_F))}
+    },
     "seeds": {${qc_seeds_json%, }}
 }
 EOF
@@ -610,14 +691,17 @@ done
 # G: Concatenate intersections
 # ---------------------------------------------------------------------------
 echo "--- G: Concatenate intersections ---"
+_ts_G_start=$(qc_timestamp); _t0_G=$(qc_epoch)
 set_run scil_concatenate_surfaces_intersections.py \
     "${all_inter_npz[@]}" \
     --output_intersections "${results}/${subject}__set_c_filtered.npz" -f
+_ts_G_end=$(qc_timestamp); _t1_G=$(qc_epoch)
 
 # ---------------------------------------------------------------------------
 # H: Connectivity matrix + surface density
 # ---------------------------------------------------------------------------
 echo "--- H: Connectivity matrix ---"
+_ts_H_start=$(qc_timestamp); _t0_H=$(qc_epoch)
 set_run scil_surface_intersections_to_connectivity.py \
     "$flow_vtk" \
     "${results}/${subject}__set_c_filtered.npz" \
@@ -630,5 +714,12 @@ set_run scil_surface_intersections_density.py \
     "${results}/${subject}__set_c_filtered.npz" \
     "${results}/${subject}__set_density.npy" \
     --normalize_l1_to 1
+_ts_H_end=$(qc_timestamp); _t1_H=$(qc_epoch)
+
+# Append G+H timing to the QC json (separate write so tracking fragment is
+# already closed before we add these).
+if [[ -n "$qc_json" ]]; then
+    qc_write "$qc_json" "\"postprocess_steps\": {\"G_concat_intersections\": {\"start\": \"${_ts_G_start}\", \"end\": \"${_ts_G_end}\", \"duration_s\": $((_t1_G - _t0_G))}, \"H_connectivity\": {\"start\": \"${_ts_H_start}\", \"end\": \"${_ts_H_end}\", \"duration_s\": $((_t1_H - _t0_H))}}"
+fi
 
 echo "=== SET direct pipeline complete: ${subject} ==="

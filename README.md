@@ -1,12 +1,37 @@
-# SET — Surface-Enhanced Tractography
+# SET++ — Surface-Enhanced Tractography Plus
 
 Registers a subject's T1w to DWI space, computes (or reuses) a fiber
 orientation distribution function (FODF), and runs surface-guided
 probabilistic tractography seeded from FreeSurfer white matter surfaces,
 producing one whole-brain tractogram.
 
-This is a brainlife.io app adaptation of the original SET method's reference
-implementation ([StongeEtienne/set-nf](https://github.com/StongeEtienne/set-nf)).
+SET++ is a reimplementation and acceleration of the original SET Nextflow
+pipeline ([StongeEtienne/set-nf](https://github.com/StongeEtienne/set-nf)),
+ported to brainlife.io and restructured for high-throughput local execution
+without Nextflow or Singularity on systems where only Docker is available.
+
+## SET++ — Reimplementation & Acceleration
+
+The original `set-nf` pipeline runs under Nextflow with Singularity and caps
+every tracking process at a single CPU (`ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=1`,
+`OMP_NUM_THREADS=1`, etc.), relying entirely on Nextflow's scheduler for
+inter-task parallelism.
+
+This reimplementation introduces two orthogonal parallelism axes:
+
+| Parameter | What it controls | Original |
+|---|---|---|
+| `max_parallel_seeds` | Number of random-seed chains running simultaneously (one container each) | Nextflow scheduler only |
+| `tracking_processes` | Sub-processes spawned *inside* each tracking container, splitting seed points | 1 (fixed) |
+
+These compose multiplicatively: `max_parallel_seeds=32` × `tracking_processes=4`
+fills all 128 cores of a 128-CPU machine simultaneously, reducing PFT tracking
+time from ~91 min (single-process) to ~23 min, with a total pipeline wall time
+of ~100 min for 32 seeds.
+
+A `main_local.sh` entry point mirrors `main` but uses Docker instead of
+Singularity, enabling local execution on machines without Singularity or root
+access.
 
 ## Citation
 
@@ -82,10 +107,13 @@ sequential `singularity exec` calls from `main`:
 Brainlife.io: run via `braise-app-run`/`braise-app-pipeline` once registered
 with `braise-app-create`, or the web UI.
 
-Locally: copy `config.json.example` to `config.json`, fill in real file
-paths, then run `./main` from this directory. Needs Singularity, not Docker,
-installed locally (`main` calls `singularity exec docker://...` — Singularity
-pulls and caches the image itself).
+Locally with Singularity: copy `config.json.example` to `config.json`, fill
+in real file paths, then run `./main` from this directory. Singularity pulls
+and caches the images automatically.
+
+Locally with Docker (no Singularity or root required): use `./main_local.sh`
+instead. Both scripts read the same `config.json` keys, including
+`max_parallel_seeds` and `tracking_processes`.
 
 
 ## License

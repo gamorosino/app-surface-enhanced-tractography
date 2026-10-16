@@ -18,6 +18,7 @@
 # only happens if the trap itself doesn't get to run (e.g. SIGKILL).
 
 qc_timestamp() { date +"%Y-%m-%d %H:%M:%S"; }
+qc_epoch()     { date +%s; }
 
 # qc_init <path> — start a fresh QC json (top-level orchestrator only).
 qc_init() {

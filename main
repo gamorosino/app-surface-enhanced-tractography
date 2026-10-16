@@ -74,6 +74,7 @@ random_seeds=$(jq -r '.random_seeds // "1,2,3,4,5,6,7,8"' "$CONFIG")
 nb_iter=$(jq -r '.nb_iter // 1' "$CONFIG")
 nb_seeds=$(jq -r '.nb_seeds // 500000' "$CONFIG")
 max_parallel_seeds=$(jq -r '.max_parallel_seeds // 4' "$CONFIG")
+tracking_processes=$(jq -r '.tracking_processes // 1' "$CONFIG")
 linear_transformation=$(jq -r '.linear_transformation // false' "$CONFIG")
 ants_verbose=$(jq -r '.ants_verbose // false' "$CONFIG")
 
@@ -387,6 +388,7 @@ bash "${STEPS_DIR}/04_run_set_direct.sh" \
     --nb-iter      "$nb_iter" \
     --nb-seeds     "$nb_seeds" \
     --max-parallel-seeds "$max_parallel_seeds" \
+    --tracking-processes "$tracking_processes" \
     --qc-json "$qc_json" \
     "${set_extra_args[@]}"
 
