@@ -141,7 +141,42 @@ visual SAF with sub-millimetre diffusion MRI:
 
 ---
 
-## 4. Our current run — sub-100206 (HCP, 2026-10-15)
+## 4. Full-range — short + long connections
+
+Same as configuration 3 but with `max_length` restored to 300 mm, capturing
+both short association fibers (V1–V2, U-fibers) and long-range white matter
+tracts in a single tractogram. Useful when both local cortical connectivity
+and inter-hemispheric / long-range tracts are of interest.
+
+```json
+{
+  "nb_seeds": 2000000,
+  "nb_iter": 1,
+  "random_seeds": "1,2,3,4,5,6,7,8",
+  "max_parallel_seeds": 8
+}
+```
+
+`04_run_set_direct.sh` settings to change from defaults:
+
+| Parameter | Value | Change from default | Rationale |
+|-----------|-------|---------------------|-----------|
+| `tractography_algo` | `prob` | — | |
+| `tractography_step` | `0.2` mm | — | |
+| `tractography_theta` | `30.0`° | **↑ from 20°** | Better U-fiber capture without over-restricting long tracts |
+| `tractography_sfthres` | `0.1` | — | |
+| `min_length` | `3` mm | **↓ from 10 mm** | Captures the full V1–V2 length distribution |
+| `max_length` | `300` mm | — | Retains long-range tracts alongside SAF |
+
+> **Note:** the same intracortical filter (> 80% intracortical length → reject)
+> recommended for configuration 3 applies here as well.
+
+**Expected yield:** ~3–5M output streamlines from 16M input seeds (~20–30%
+acceptance). Runtime ~12–16 h on a 128-CPU machine with 8 parallel chains.
+
+---
+
+## 5. Our current run — sub-100206 (HCP, 2026-10-15)
 
 Baseline run on HCP subject 100206 using default SET++ parameters.
 Produced 323,032 output streamlines from 4M input seeds (~8% acceptance).
@@ -185,4 +220,5 @@ Uploaded to brainlife.io — Visual White Matter Tracking project
 | St-Onge 2018 | 250k | 10 mm | 300 mm | 20° | ~20k | ~40 min |
 | Our baseline | 4M | 10 mm | 300 mm | 20° | 323k | ~2 h 48 min |
 | HCP / Winter 2020 | 3M | 10 mm | 300 mm | 20° | ~240k | ~2 h |
-| SAF / visual cortex | 16M | **3 mm** | **120 mm** | **30°** | ~3–5M | ~12–16 h |
+| SAF / visual cortex (short only) | 16M | **3 mm** | **120 mm** | **30°** | ~3–5M | ~12–16 h |
+| Full-range (short + long) | 16M | **3 mm** | 300 mm | **30°** | ~3–5M | ~12–16 h |
