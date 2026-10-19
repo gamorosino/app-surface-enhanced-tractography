@@ -144,6 +144,12 @@ while [[ $# -gt 0 ]]; do
         --nb-seeds)     nb_seeds="$2";     shift 2 ;;
         --max-parallel-seeds) max_parallel_seeds="$2"; shift 2 ;;
         --tracking-processes) tracking_processes="$2"; shift 2 ;;
+        --min-length)   min_length="$2";            shift 2 ;;
+        --max-length)   max_length="$2";            shift 2 ;;
+        --theta)        tractography_theta="$2";    shift 2 ;;
+        --step)         tractography_step="$2";     shift 2 ;;
+        --sfthres)      tractography_sfthres="$2";  shift 2 ;;
+        --algo)         tractography_algo="$2";     shift 2 ;;
         --force-tracking) force_tracking=true; shift ;;
         --qc-json) qc_json="$2"; shift 2 ;;
         --transf-linear) transf_linear=true; shift ;;
@@ -209,8 +215,8 @@ if [[ "$use_docker" == true ]]; then
     fi
     # When using internal process parallelism, mount the parallel wrapper script
     # so it is callable inside the container alongside the original script.
-    _pft_parallel_script_host="${SCRIPT_DIR}/../utils/scil_surface_pft_parallel.py"
     if [[ "$tracking_processes" -gt 1 ]]; then
+        _pft_parallel_script_host="$(realpath "${SCRIPT_DIR}/../utils/scil_surface_pft_parallel.py")"
         _vol_flags="${_vol_flags} -v ${_pft_parallel_script_host}:/scilpy/scripts/scil_surface_pft_parallel.py"
     fi
     # The Singularity image sets PATH via %environment; Docker import doesn't carry that.

@@ -176,43 +176,6 @@ acceptance). Runtime ~12–16 h on a 128-CPU machine with 8 parallel chains.
 
 ---
 
-## 5. Our current run — sub-100206 (HCP, 2026-10-15)
-
-Baseline run on HCP subject 100206 using default SET++ parameters.
-Produced 323,032 output streamlines from 4M input seeds (~8% acceptance).
-Runtime: ~2 h 48 min on 128-CPU EC2 (8 parallel chains).
-
-Rejection analysis:
-- Step 1 (seeds → cortical intersection): 20.2% acceptance — 79.8% of seeds
-  track into WM but never return to a second cortical surface.
-- Step 2 (intersection → length filter): 40.0% acceptance — 60% of surviving
-  streamlines are shorter than the 10 mm floor (mostly tight gyral U-shapes).
-
-Uploaded to brainlife.io — Visual White Matter Tracking project
-(`5dceb267c4ae281d2c297b92`), dataset `6ad66d5984949766fe5d8eb9`.
-
-```json
-{
-  "nb_seeds": 500000,
-  "nb_iter": 1,
-  "random_seeds": "1,2,3,4,5,6,7,8",
-  "max_parallel_seeds": 8
-}
-```
-
-`04_run_set_direct.sh` settings (all defaults):
-
-| Parameter | Value |
-|-----------|-------|
-| `tractography_algo` | `prob` |
-| `tractography_step` | `0.2` mm |
-| `tractography_theta` | `20.0`° |
-| `tractography_sfthres` | `0.1` |
-| `min_length` | `10` mm |
-| `max_length` | `300` mm |
-
----
-
 ## Quick comparison
 
 | Config | Seeds (total) | `min_length` | `max_length` | `theta` | Est. output | Runtime (8 chains) |

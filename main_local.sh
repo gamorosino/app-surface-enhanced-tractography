@@ -40,6 +40,12 @@ max_parallel_seeds=$(jq -r '.max_parallel_seeds // 8' "$CONFIG")
 tracking_processes=$(jq -r '.tracking_processes // 1' "$CONFIG")
 linear_transformation=$(jq -r '.linear_transformation // false' "$CONFIG")
 ants_verbose=$(jq -r '.ants_verbose // false' "$CONFIG")
+min_length=$(jq -r '.min_length // empty' "$CONFIG")
+max_length=$(jq -r '.max_length // empty' "$CONFIG")
+theta=$(jq -r '.theta // empty' "$CONFIG")
+step=$(jq -r '.step // empty' "$CONFIG")
+sfthres=$(jq -r '.sfthres // empty' "$CONFIG")
+algo=$(jq -r '.algo // empty' "$CONFIG")
 
 [[ -n "$fodf_lmax8" && -f "$fodf_lmax8" ]] || { echo "ERROR: fodf_lmax8 required and not found: $fodf_lmax8"; exit 1; }
 [[ -d "$freesurfer_dir" ]] || { echo "ERROR: freesurfer dir not found: $freesurfer_dir"; exit 1; }
@@ -325,6 +331,12 @@ qc_write "$qc_json" "$staging_fragment"
 echo "=== Running SET (Docker: ${SET_IMAGE}, max_parallel_seeds=${max_parallel_seeds}) ==="
 set_extra_args=()
 [[ "$linear_transformation" == true ]] && set_extra_args+=(--transf-linear)
+[[ -n "$min_length" ]] && set_extra_args+=(--min-length "$min_length")
+[[ -n "$max_length" ]] && set_extra_args+=(--max-length "$max_length")
+[[ -n "$theta"      ]] && set_extra_args+=(--theta      "$theta")
+[[ -n "$step"       ]] && set_extra_args+=(--step       "$step")
+[[ -n "$sfthres"    ]] && set_extra_args+=(--sfthres    "$sfthres")
+[[ -n "$algo"       ]] && set_extra_args+=(--algo       "$algo")
 
 bash "${STEPS_DIR}/04_run_set_direct.sh" \
     --subject              "$sub" \
