@@ -41,6 +41,12 @@ If you use this app, please cite the original SET method:
 
 Original SET implementation: https://github.com/StongeEtienne/set-nf
 
+## Parameter configurations
+
+Example configurations for different use cases (whole-brain connectivity,
+HCP data, short association fibers / visual cortex) with source references
+are documented in [`params.md`](params.md).
+
 ## Authors
 
 - Gabriele Amorosino
