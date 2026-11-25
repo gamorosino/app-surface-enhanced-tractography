@@ -1,5 +1,58 @@
 # SET++ — Surface-Enhanced Tractography Plus
 
+<!-- brainlife-app:begin (generated from the App manifest; edit the manifest, not this block) -->
+
+> **Generates a whole-brain tractogram with Surface-Enhanced Tractography (SET), seeding probabilistic tracking from FreeSurfer white matter surfaces, after registering the T1w to DWI with ANTs and computing FODFs with scilpy.**
+
+Registers the T1w to DWI space with ANTs (SyN, or affine only with linear_transformation), computes an order-8 FODF with scilpy unless one is supplied, and runs the SET engine (freesurfer_a2009s_proper profile only) for several random-seed chains, then concatenates them into one tractogram. Use it for surface-informed whole-brain tractography with better cortical terminations. Needs preprocessed DWI, FA, an ACPC-aligned T1w, a FreeSurfer directory and a 5TT mask (vol2 used as WM include, vol3 as CSF exclude).
+
+| | |
+|---|---|
+| 📥 **Inputs** | `neuro/dwi` · `neuro/freesurfer` · `neuro/tensor` · `neuro/anat/t1w` · `neuro/mask` · `neuro/csd` (optional) · `neuro/transform/nifti` (optional) |
+| 📤 **Outputs** | `neuro/track/tck` · `neuro/csd` · `neuro/transform/nifti` |
+| 🐳 **Container** | `gamorosino/ensemble_tracking:latest` |
+| ⚙️ **Resources** | 8 CPUs · 16 GB memory · 15 h walltime |
+| 🔗 **Run it** | [doi.org/10.25663/brainlife.app.951](https://doi.org/10.25663/brainlife.app.951) |
+
+#### 📥 Inputs
+
+| Input | Datatype | Required | Description |
+|---|---|---|---|
+| `dwi` | `neuro/dwi` | yes | Preprocessed DWI with bvecs and bvals. |
+| `freesurfer` | `neuro/freesurfer` | yes | FreeSurfer subject directory whose white matter surfaces seed tracking. |
+| `tensor` | `neuro/tensor` | yes | Tensor dataset; only the FA map is used. |
+| `t1` | `neuro/anat/t1w` | yes | ACPC-aligned T1-weighted image registered to DWI space. |
+| `mask_5tt` | `neuro/mask` (5tt) | yes | 4D five-tissue-type mask. Brainlife 5tt ordering: volume 2 is white matter (include), volume 3 is CSF (exclude). |
+| `fodf` | `neuro/csd` | no | Optional precomputed FODF (SH order 8, descoteaux07 basis); skips FODF computation. |
+| `t1_transform` | `neuro/transform/nifti` | no | Optional precomputed T1-to-DWI ANTs transform; skips registration. Warp, inverse warp and affine must all be given together. |
+
+#### 📤 Outputs
+
+| Output | Datatype | Description |
+|---|---|---|
+| `tractogram` | `neuro/track/tck` | Final concatenated whole-brain tractogram from Surface-Enhanced Tractography (all 8 random-seed chains concatenated). |
+| `fodf` | `neuro/csd` | FODF (SH order 8, descoteaux07 basis) -- only produced when the fodf input wasn't already given. |
+| `t1_transform` | `neuro/transform/nifti` | T1-to-DWI ANTs registration transform -- only produced when the t1_transform input wasn't already given. |
+
+<details>
+<summary><b>⚙️ Parameters</b> (6)</summary>
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `random_seeds` | string | `1,2,3,4,5,6,7,8` | Comma-separated random seeds for SET tracking chains. |
+| `nb_iter` | number | `1` | Dynamic seeding iterations per random seed. |
+| `nb_seeds` | number | `500000` | Seeds per iteration. |
+| `max_parallel_seeds` | number | `4` | Concurrent random-seed tracking chains. |
+| `linear_transformation` | boolean | `false` | Register T1 to DWI with an affine transform only (no SyN) and pass --transf-linear to SET. |
+| `ants_verbose` | boolean | `false` | Enable ANTs registration verbose output (produces very large logs; useful for debugging only). |
+
+</details>
+
+📚 **References used by this App:**
+- St-Onge E, Daducci A, Girard G, Descoteaux M. Surface-enhanced tractography (SET). NeuroImage 169:524-539 (2018). [doi:10.1016/j.neuroimage.2017.12.036](https://doi.org/10.1016/j.neuroimage.2017.12.036)
+
+<!-- brainlife-app:end -->
+
 Registers a subject's T1w to DWI space, computes (or reuses) a fiber
 orientation distribution function (FODF), and runs surface-guided
 probabilistic tractography seeded from FreeSurfer white matter surfaces,
